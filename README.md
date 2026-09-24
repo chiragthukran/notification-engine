@@ -1,60 +1,107 @@
-# NX — Scalable Multi-Tenant Notification Engine
-
-**NX** is a robust, scalable, multi-tenant notification engine built to intelligently queue, route, and deliver notifications across multiple channels (Push, Email, SMS) based on strict priority rules and user preferences.
-
----
-
 ## 🏛️ Architecture
 
-Our notification engine sits between tenant services (e.g., Payment, Order, Recommendation services) and the actual delivery providers. It absorbs high-throughput requests, queues them, and relies on an intelligent routing engine to guarantee delivery according to the user's specific channel preferences.
+NX sits between tenant applications and external notification providers.
+
+Tenant services submit notification requests to the NX API. The engine validates user preferences, places notifications into priority queues, and uses the routing engine to select the appropriate delivery channel.
 
 ```mermaid
-flowchart TD
-    %% Tenants
-    subgraph Tenants [Tenant Services]
-        PS(Payment Service)
-        OS(Order Service)
-        RS(Recommendations)
+flowchart LR
+
+    subgraph TENANTS["Tenant Services"]
+        PAYMENT["Payment Service"]
+        ORDER["Order Service"]
+        RECOMMEND["Recommendation Service"]
     end
 
-    %% Engine Core
-    subgraph Engine [Notification Engine Core]
-        API[NX API Gateway]
-        UPC{User Preference & \nChannel Eligibility Check}
-        RMQ[(RabbitMQ \nPriority Queues)]
+    subgraph ENGINE["NX Notification Engine"]
+        API["NX API Gateway"]
+        PREF{"Preference and Eligibility Check"}
+        QUEUE[("RabbitMQ Priority Queues")]
+        ROUTER["Intelligent Routing Engine"]
     end
 
-    %% Channels
-    subgraph Channels [Delivery Channels]
-        SES[Email (AWS SES)]
-        TW[SMS (Twilio)]
-        WS[Push (WebSockets)]
+    subgraph CHANNELS["Delivery Channels"]
+        PUSH["Push - WebSockets"]
+        EMAIL["Email - AWS SES"]
+        SMS["SMS - Twilio"]
     end
 
-    %% Flow
-    PS -->|POST /notifications| API
-    OS -->|POST /notifications| API
-    RS -->|POST /notifications| API
-    
-    API --> UPC
-    UPC --> RMQ
-    
-    RMQ -->|Dequeue & Route| SES
-    RMQ -->|Dequeue & Route| TW
-    RMQ -->|Dequeue & Route| WS
-    
-    SES -->|Success| DELIVERED((Delivered))
-    SES -->|Fail| SES_RETRY[Retry 3x \nFallback]
-    
-    TW -->|Success| DELIVERED
-    TW -->|Fail| TW_RETRY[Retry 3x \nFallback]
-    
-    WS -->|User Online| DELIVERED
-    WS -->|User Offline| WS_OFFLINE[Offline Holding Queue \n Wait for Reconnect]
+    subgraph HANDLING["Delivery Handling"]
+        DELIVERED(("Delivered"))
+        RETRY["Retry and Fallback"]
+        OFFLINE["Offline Holding Queue"]
+    end
+
+    PAYMENT -->|"POST /notifications"| API
+    ORDER -->|"POST /notifications"| API
+    RECOMMEND -->|"POST /notifications"| API
+
+    API --> PREF
+    PREF --> QUEUE
+    QUEUE --> ROUTER
+
+    ROUTER --> PUSH
+    ROUTER --> EMAIL
+    ROUTER --> SMS
+
+    PUSH -->|"Online"| DELIVERED
+    EMAIL -->|"Success"| DELIVERED
+    SMS -->|"Success"| DELIVERED
+
+    PUSH -->|"Offline"| OFFLINE
+    PUSH -->|"Failure"| RETRY
+    EMAIL -->|"Failure"| RETRY
+    SMS -->|"Failure"| RETRY
+
+    OFFLINE -.->|"Reconnect or Fallback"| ROUTER
+    RETRY -.->|"Retry or Next Channel"| ROUTER
 ```
 
 ---
 
+## 🚀 What NX Does
+
+Multiple isolated tenants can send notification requests through the authenticated NX API.
+
+Instead of communicating directly with providers such as Twilio or AWS SES, tenant applications communicate with NX.
+
+```text
+Tenant Service
+      |
+      v
+NX API Gateway
+      |
+      v
+Preference Check
+      |
+      v
+Priority Queue
+      |
+      v
+Routing Engine
+      |
+      +------ Push
+      |
+      +------ Email
+      |
+      +------ SMS
+```
+
+NX handles:
+
+- Notification ingestion
+- Priority-based queuing
+- User preference validation
+- Channel eligibility
+- Intelligent routing
+- Provider communication
+- Retries
+- Cross-channel fallback
+- Offline notification handling
+- Delivery tracking
+- Real-time monitoring
+
+The API and worker layers are designed to operate asynchronously so that tenant services do not need to wait for external providers to complete delivery.
 ## 🚀 What NX Does
 
 Multiple isolated tenants send notification requests to NX through its authenticated API. NX processes, queues, routes, retries, and delivers those notifications asynchronously. 
