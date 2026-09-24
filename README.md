@@ -1,237 +1,144 @@
 # NX — Scalable Multi-Tenant Notification Engine
 
-A production-grade notification engine supporting multiple tenants, priority-based queuing (Important/High/Medium/Low), multi-channel delivery (Push/Email/SMS), intelligent retry/fallback logic, and a real-time dashboard.
+**NX** is a robust, scalable, multi-tenant notification engine built to intelligently queue, route, and deliver notifications across multiple channels (Push, Email, SMS) based on strict priority rules and user preferences.
 
-## Architecture
+---
 
+## 🏛️ Architecture
+
+Our notification engine sits between tenant services (e.g., Payment, Order, Recommendation services) and the actual delivery providers. It absorbs high-throughput requests, queues them, and relies on an intelligent routing engine to guarantee delivery according to the user's specific channel preferences.
+
+```mermaid
+flowchart TD
+    %% Tenants
+    subgraph Tenants [Tenant Services]
+        PS(Payment Service)
+        OS(Order Service)
+        RS(Recommendations)
+    end
+
+    %% Engine Core
+    subgraph Engine [Notification Engine Core]
+        API[NX API Gateway]
+        UPC{User Preference & \nChannel Eligibility Check}
+        RMQ[(RabbitMQ \nPriority Queues)]
+    end
+
+    %% Channels
+    subgraph Channels [Delivery Channels]
+        SES[Email (AWS SES)]
+        TW[SMS (Twilio)]
+        WS[Push (WebSockets)]
+    end
+
+    %% Flow
+    PS -->|POST /notifications| API
+    OS -->|POST /notifications| API
+    RS -->|POST /notifications| API
+    
+    API --> UPC
+    UPC --> RMQ
+    
+    RMQ -->|Dequeue & Route| SES
+    RMQ -->|Dequeue & Route| TW
+    RMQ -->|Dequeue & Route| WS
+    
+    SES -->|Success| DELIVERED((Delivered))
+    SES -->|Fail| SES_RETRY[Retry 3x \nFallback]
+    
+    TW -->|Success| DELIVERED
+    TW -->|Fail| TW_RETRY[Retry 3x \nFallback]
+    
+    WS -->|User Online| DELIVERED
+    WS -->|User Offline| WS_OFFLINE[Offline Holding Queue \n Wait for Reconnect]
 ```
-┌─────────────────┐    ┌──────────────────────────────────────────────────────────┐
-│   Tenant A      │    │                    NX ENGINE                            │
-│   (Postman)     │───▶│                                                          │
-├─────────────────┤    │  ┌─────────┐    ┌──────────┐    ┌──────────────────────┐ │
-│   Tenant B      │───▶│  │  REST   │───▶│ RabbitMQ │───▶│  Notification Engine │ │
-│   (Postman)     │    │  │  API    │    │ Priority │    │                      │ │
-├─────────────────┤    │  │         │    │  Queue   │    │  ┌─ Important ──▶ ALL│ │
-│   Tenant C      │───▶│  └─────────┘    └──────────┘    │  ├─ High ──▶ Fallback│ │
-│   (Postman)     │    │                                  │  ├─ Medium ──▶ P+E  │ │
-└─────────────────┘    │  ┌─────────────────────────────┐ │  └─ Low ──▶ Single  │ │
-                       │  │      Channel Providers      │ │                      │ │
-                       │  │  ┌──────┬───────┬─────────┐ │ └──────────────────────┘ │
-                       │  │  │ Push │ Email │   SMS   │ │                          │
-                       │  │  │  WS  │  SES  │ Twilio  │ │  ┌──────────────────┐    │
-                       │  │  └──────┴───────┴─────────┘ │  │   PostgreSQL     │    │
-                       │  └─────────────────────────────┘  │   (Persistence)  │    │
-                       │                                    └──────────────────┘    │
-                       └───────────────────────────────────────────────────────────┘
-                                              │
-                       ┌──────────────────────────────────┐
-                       │      Next.js Dashboard           │
-                       │  Stats · Charts · Live Table     │
-                       └──────────────────────────────────┘
-```
 
-## Quick Start
+---
+
+## 🚀 What NX Does
+
+Multiple isolated tenants send notification requests to NX through its authenticated API. NX processes, queues, routes, retries, and delivers those notifications asynchronously. 
+
+The system provides a **Next.js Real-time Dashboard** that visualizes the current load, queue lengths, delivery successes, and fallback trajectories in real-time using live database state.
+
+### Core Philosophy & Initial Thoughts
+Our initial plan was built around reliability and smart degradation. The engine should never lose a notification if a primary channel goes down. If a user is offline for a Push notification, the system should smartly cache it until they return, or automatically degrade (fallback) to an Email or SMS to ensure the message gets delivered. The design is heavily modular to ensure the queue consumers scale entirely independently of the API gateways.
+
+---
+
+## 🚦 Priority Routing & Fallback Logic
+
+Notifications wait in the queue and are processed based on four strict priority levels. The system handles maximum **3 retries per channel (4 total attempts)** before considering a channel "failed".
+
+### 1. Important (Highest)
+* **Goal:** Absolute guarantee of delivery as fast as possible.
+* **Routing:** Sent independently through **ALL** channels enabled in the user's preferences simultaneously.
+* **Fallback:** No cross-channel fallback. Each channel retries itself 3 times if it fails. If Push is offline, it waits in the offline queue without blocking Email or SMS.
+
+### 2. High
+* **Goal:** Reliable delivery across the user's preferred fallback chain.
+* **Routing:** Uses the user's eligible channel order (Default: `Push ➔ Email ➔ SMS`).
+* **Fallback:** Tries Push ➔ retries 3x ➔ if fails, falls back to Email ➔ retries 3x ➔ if fails, falls back to SMS ➔ retries 3x.
+* **Offline Push:** Waits a maximum of **3 minutes** for the user to come online before falling back to the next channel.
+
+### 3. Medium
+* **Goal:** Standard delivery, but saves money on expensive SMS channels.
+* **Routing:** Only `Push` and `Email` are allowed. **SMS is strictly forbidden**.
+* **Fallback:** Tries Push ➔ retries 3x ➔ falls back to Email.
+* **Offline Push:** Waits a maximum of **72 hours** for the user to come online before falling back to Email. 
+
+### 4. Low (Lowest)
+* **Goal:** Non-intrusive updates (e.g., weekly digest tips).
+* **Routing:** Uses the **single** most preferred eligible channel.
+* **Fallback:** Zero cross-channel fallback. If it fails after 3 retries, it stops.
+* **Offline Push:** Waits up to **72 hours**. If they don't come online, it fails.
+
+---
+
+## 🧪 Why Use Simulations & Mock Mode?
+
+By default, the engine boots up with `MOCK_CHANNELS=true` (or you can toggle it off in the Dashboard via the red **🚀 PROD MODE** button). 
+
+**Why do we simulate?**
+1. **Cost Efficiency:** Testing fallback chains (e.g., sending an SMS 4 times in a row before it fails) is incredibly expensive using real Twilio APIs.
+2. **Network Resilience Testing:** Mock mode allows administrators to dynamically toggle channels ON or OFF on the fly directly from the dashboard. If you turn off the "Push" channel, you can watch the Engine seamlessly pivot all High priority messages over to Email in real-time.
+3. **Sandbox Testing:** Trial accounts (like Twilio) have strict limits on sending messages to specific countries or using custom templates. Mock mode lets us bypass third-party rate limits while perfectly testing our internal engine logic.
+
+---
+
+## 🛠️ How to Start the Project
 
 ### Prerequisites
+You need Docker, Node.js (v18+), and `pnpm` installed.
 
-- **Node.js** 18+
-- **pnpm** (`npm install -g pnpm`)
-- **Docker** (for PostgreSQL + RabbitMQ)
+1. **Start the Infrastructure (PostgreSQL & RabbitMQ):**
+   ```bash
+   docker-compose up -d
+   ```
 
-### 1. Start Infrastructure
+2. **Install Dependencies:**
+   ```bash
+   pnpm install
+   ```
 
-```bash
-# Start PostgreSQL and RabbitMQ
-docker run -d --name nx-postgres -p 5432:5432 \
-  -e POSTGRES_USER=nx -e POSTGRES_PASSWORD= \
-  -e POSTGRES_DB=nx_db postgres:16-alpine
+3. **Configure Environment:**
+   Update your `apps/api/.env` if you wish to use real Twilio/AWS SES keys.
 
-docker run -d --name nx-rabbitmq -p 5672:5672 -p 15672:15672 \
-  rabbitmq:3.13-management-alpine
-```
-
-Or using Docker Compose:
-```bash
-docker compose up -d
-```
-
-### 2. Install & Run
-
-```bash
-# Install dependencies
-pnpm install
-
-# Start API (port 3001)
-pnpm dev:api
-
-# Start Dashboard (port 3000) — in another terminal
-pnpm dev:web
-
-# Or start both simultaneously
-pnpm dev
-```
-
-### 3. Verify
-
-- **API**: http://localhost:3001/api/dashboard/stats
-- **Dashboard**: http://localhost:3000
-- **RabbitMQ UI**: http://localhost:15672 (guest/guest)
+4. **Start the Development Servers:**
+   ```bash
+   pnpm dev
+   ```
+   This command automatically starts both the NestJS Backend (`http://localhost:3001`) and the Next.js Dashboard (`http://localhost:3000`).
 
 ---
 
-## API Reference
+## 🎯 How to Test It
 
-All tenant-scoped endpoints require `x-api-key` header.
+Testing NX is incredibly visual and interactive via the built-in Dashboard.
 
-### Tenants (No auth required)
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/tenants` | Register tenant (returns API key) |
-| GET | `/api/tenants` | List all tenants |
-| GET | `/api/tenants/:id` | Get tenant |
-
-```bash
-# Register a tenant
-curl -X POST http://localhost:3001/api/tenants \
-  -H "Content-Type: application/json" \
-  -d '{"name": "Acme Corp", "description": "E-commerce platform"}'
-```
-
-### Users (Requires `x-api-key`)
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/users` | Create user |
-| GET | `/api/users` | List users |
-| GET | `/api/users/:id` | Get user |
-| PUT | `/api/users/:id/preferences` | Update channel preferences |
-
-```bash
-# Create user
-curl -X POST http://localhost:3001/api/users \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: nx_your_api_key_here" \
-  -d '{"externalId": "user-001", "email": "john@example.com", "phone": "+1234567890"}'
-
-# Update preferences (disable SMS, reorder channels)
-curl -X PUT http://localhost:3001/api/users/:userId/preferences \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: nx_your_api_key_here" \
-  -d '{"smsEnabled": false, "channelOrder": ["email", "push", "sms"]}'
-```
-
-### Notifications (Requires `x-api-key`)
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/notifications` | Send notification |
-| GET | `/api/notifications` | List notifications (filters: status, priority, limit) |
-| GET | `/api/notifications/:id` | Get notification with delivery attempts |
-
-```bash
-# Send a HIGH priority notification
-curl -X POST http://localhost:3001/api/notifications \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: nx_your_api_key_here" \
-  -d '{
-    "userId": "user-uuid-here",
-    "priority": "high",
-    "title": "Order Shipped",
-    "body": "Your order #12345 has been shipped!",
-    "data": {"orderId": "12345"}
-  }'
-```
-
-### Dashboard (No auth)
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/dashboard/stats` | Complete dashboard statistics |
-
----
-
-## Priority System
-
-| Priority | Behavior | Channels | Fallback |
-|----------|----------|----------|----------|
-| **Important** | Send to ALL enabled channels in parallel | Push + Email + SMS | Each retries independently; no cross-channel fallback |
-| **High** | Sequential fallback chain | Push → Email → SMS | Full chain with 3 retries each |
-| **Medium** | Push and Email only | Push → Email | No SMS ever; skip if both disabled |
-| **Low** | Single channel only | First eligible | No fallback; 3 retries then fail |
-
-### Push Offline Behavior
-
-| Priority | Wait Time | On Timeout |
-|----------|-----------|------------|
-| Important | 3 min (Push); Email/SMS not blocked | Push marked pending |
-| High | 3 min | Fallback to next channel |
-| Medium | 72 hours | Fallback to Email |
-| Low | 72 hours | Failed (no fallback) |
-
----
-
-## WebSocket (Push Notifications)
-
-Connect with Socket.IO:
-
-```javascript
-const socket = io("http://localhost:3001", {
-  auth: { userId: "user-uuid-here" }
-});
-
-socket.on("notification", (data) => {
-  console.log("Received:", data);
-  // { id, title, body, priority, data, timestamp }
-});
-```
-
----
-
-## Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DB_HOST` | localhost | PostgreSQL host |
-| `DB_PORT` | 5432 | PostgreSQL port |
-| `DB_USERNAME` | nx | Database user |
-| `DB_PASSWORD` | nx_password | Database password |
-| `DB_DATABASE` | nx_db | Database name |
-| `RABBITMQ_URL` | amqp://guest:guest@localhost:5672 | RabbitMQ URL |
-| `MOCK_CHANNELS` | true | Use mock channel providers |
-| `API_PORT` | 3001 | API server port |
-| `AWS_REGION` | us-east-1 | AWS SES region |
-| `AWS_ACCESS_KEY_ID` | | SES access key |
-| `AWS_SECRET_ACCESS_KEY` | | SES secret key |
-| `SES_FROM_EMAIL` | noreply@example.com | Sender email |
-| `TWILIO_ACCOUNT_SID` | | Twilio SID |
-| `TWILIO_AUTH_TOKEN` | | Twilio auth token |
-| `TWILIO_PHONE_NUMBER` | | Twilio sender number |
-
----
-
-## Project Structure
-
-```
-NX/
-├── apps/
-│   ├── api/                    # NestJS backend
-│   │   └── src/
-│   │       ├── auth/           # API key authentication
-│   │       ├── channels/       # Push, Email, SMS providers
-│   │       ├── common/         # Shared enums & constants
-│   │       ├── config/         # Configuration
-│   │       ├── dashboard/      # Dashboard statistics API
-│   │       ├── database/       # TypeORM entities
-│   │       ├── engine/         # Core notification engine
-│   │       │   └── strategies/ # Important/High/Medium/Low
-│   │       ├── notifications/  # Notification CRUD
-│   │       ├── queue/          # RabbitMQ producer/consumer
-│   │       ├── tenants/        # Tenant management
-│   │       ├── users/          # User management
-│   │       └── websocket/      # WebSocket gateway
-│   └── web/                    # Next.js dashboard
-│       └── src/app/            # Dashboard UI
-├── docker-compose.yml          # PostgreSQL + RabbitMQ
-└── pnpm-workspace.yaml         # Monorepo config
-```
+1. **Open the Dashboard:** Go to `http://localhost:3000`.
+2. **Tenant Dispatch Studio:** Navigate to the "Tenant Dispatcher" tab on the left.
+3. **Dispatch Presets:** Use the "Quick Test Scenarios" buttons to immediately queue up notifications with various priorities (Important, High, Medium, Low).
+4. **Watch the Engine Monitor:** Navigate to the "Engine Monitor" tab. Watch the live charts and the "Delivery Status Timeline" to see your notifications queue up, process, and successfully deliver.
+5. **Force a Fallback:** In the Engine Monitor, locate the **Channel Simulator** bar. Toggle the **Push** channel to **OFF**. Now go dispatch a High Priority notification and watch the engine automatically detect the failure and fallback to the Email channel!
+6. **Test Prod Mode:** If you have real Twilio credentials configured in `.env`, flip the "Prod Mode" toggle in the Simulator Bar and dispatch an SMS to see it arrive on your physical phone!
