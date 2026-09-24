@@ -4,6 +4,8 @@ import { Notification } from '../../database/entities/notification.entity';
 import { User } from '../../database/entities/user.entity';
 import { ChannelProvider } from '../../engine/interfaces';
 import { ConnectionManagerService } from '../../websocket/connection-manager.service';
+import { ChannelControlService } from '../channel-control.service';
+import { Channel, Priority } from '../../common/enums';
 
 interface PendingPush {
   notification: Notification;
@@ -17,7 +19,7 @@ interface PendingPush {
  * Push notification channel provider.
  *
  * Delivers notifications via WebSocket to connected users.
- * Handles offline scenarios with configurable wait timeouts.
+ * Supports ChannelControl toggles and configurable wait timeouts.
  */
 @Injectable()
 export class PushService implements ChannelProvider {
@@ -36,6 +38,7 @@ export class PushService implements ChannelProvider {
 
   constructor(
     private readonly connectionManager: ConnectionManagerService,
+    private readonly channelControl: ChannelControlService,
   ) {
     // Listen for user-online events to flush pending pushes
     this.connectionManager.on('user-online', (userId: string) => {
@@ -51,13 +54,38 @@ export class PushService implements ChannelProvider {
   }
 
   /**
+   * Check if Push channel is enabled by admin/simulator toggle.
+   */
+  isPushChannelEnabled(): boolean {
+    return this.channelControl.isChannelEnabled(Channel.PUSH);
+  }
+
+  /**
+   * Returns wait timeout for offline push, taking into account fastFallback test mode.
+   */
+  getOfflineWait(priority: Priority): number {
+    return this.channelControl.getPushOfflineWait(priority);
+  }
+
+  /**
    * Send a push notification to a user.
-   * Only works if user is online.
+   * Checks channel toggle first, then WebSocket connection.
    */
   async send(
     notification: Notification,
     user: User,
   ): Promise<{ success: boolean; error?: string }> {
+    // 1. Check if Push channel is toggled ON or OFF in simulator
+    if (!this.channelControl.isChannelEnabled(Channel.PUSH)) {
+      this.logger.warn(
+        `[PUSH SERVICE DISABLED] Simulated failure for notification ${notification.id} to user ${user.id}`,
+      );
+      return {
+        success: false,
+        error: 'Push service unavailable: Service toggled OFF by admin',
+      };
+    }
+
     const socket = this.connectionManager.getSocket(user.id);
 
     if (!socket) {
@@ -77,6 +105,19 @@ export class PushService implements ChannelProvider {
       this.logger.log(
         `Push notification sent to user ${user.id} — notification ${notification.id}`,
       );
+
+      // Record delivered push message
+      this.channelControl.recordDeliveredMessage({
+        notificationId: notification.id,
+        userId: user.id,
+        channel: Channel.PUSH,
+        recipient: 'Push Device',
+        title: notification.title,
+        body: notification.body,
+        data: notification.data,
+        priority: notification.priority,
+      });
+
       return { success: true };
     } catch (err) {
       return { success: false, error: err.message };
@@ -115,15 +156,18 @@ export class PushService implements ChannelProvider {
   /**
    * Wait for a user to come online and deliver a push notification.
    * Returns true if delivered, false if timeout expired.
-   *
-   * Used by High/Medium/Low strategies where we need to wait
-   * and potentially fallback.
    */
   async waitForUserOnline(
     notification: Notification,
     user: User,
     timeoutMs: number,
   ): Promise<boolean> {
+    // If push service itself is disabled, fail immediately without waiting
+    if (!this.channelControl.isChannelEnabled(Channel.PUSH)) {
+      this.logger.log(`Push service disabled, not waiting for user online`);
+      return false;
+    }
+
     return new Promise<boolean>((resolve) => {
       const key = `${user.id}:${notification.id}`;
 
@@ -133,7 +177,7 @@ export class PushService implements ChannelProvider {
         if (pending) {
           this.removePending(key, user.id);
           this.logger.log(
-            `Push wait expired for notification ${notification.id}`,
+            `Push wait expired for notification ${notification.id} after ${timeoutMs}ms`,
           );
           resolve(false);
         }
@@ -182,9 +226,7 @@ export class PushService implements ChannelProvider {
         this.logger.log(
           `Pending push delivered: notification ${pending.notification.id}`,
         );
-        // Clear timeout if it exists
         if (pending.timeout) clearTimeout(pending.timeout);
-        // Resolve the promise (for waitForUserOnline callers)
         pending.resolve(true);
       } else {
         this.logger.warn(

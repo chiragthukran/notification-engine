@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Channel, PUSH_OFFLINE_WAIT, Priority } from '../../common/enums';
+import { Channel, Priority, DeliveryStatus } from '../../common/enums';
 import { Notification } from '../../database/entities/notification.entity';
 import { UserPreference } from '../../database/entities/user-preference.entity';
 import { User } from '../../database/entities/user.entity';
@@ -11,13 +11,15 @@ import {
 import { RetryService } from '../retry.service';
 import { PushService } from '../../channels/push/push.service';
 import { EmailService } from '../../channels/email/email.service';
+import { OfflineQueueService } from '../offline-queue.service';
 
 /**
  * MEDIUM priority strategy:
  *
  * Only Push and Email are allowed — SMS is NEVER used.
  * Fallback: Push → retry 3x → Email → retry 3x → Failed
- * Push offline: wait 72 hours, then fallback to Email.
+ * Push offline: places message into Offline Queue with TTL.
+ * When user comes online, message is delivered. If TTL expires, falls back to Email.
  * If both Push and Email disabled → SKIPPED (not failed).
  */
 @Injectable()
@@ -28,6 +30,7 @@ export class MediumStrategy implements DeliveryStrategy {
     private readonly retryService: RetryService,
     private readonly pushService: PushService,
     private readonly emailService: EmailService,
+    private readonly offlineQueueService: OfflineQueueService,
   ) {}
 
   async execute(
@@ -63,45 +66,57 @@ export class MediumStrategy implements DeliveryStrategy {
     for (const channel of allowedChannels) {
       const provider = channel === Channel.PUSH ? this.pushService : this.emailService;
 
-      // Push offline handling: wait 72 hours
+      // Push offline handling
       if (channel === Channel.PUSH) {
-        const isOnline = this.pushService.isUserOnline(user.id);
-        if (!isOnline) {
-          this.logger.log(
-            `[MEDIUM] User ${user.id} offline for Push — waiting up to 72 hours`,
-          );
-
-          const delivered = await this.pushService.waitForUserOnline(
-            notification,
-            user,
-            PUSH_OFFLINE_WAIT[Priority.MEDIUM],
-          );
-
-          if (delivered) {
-            channelResults.push({
-              channel: Channel.PUSH,
-              success: true,
-              attempts: 1,
-            });
-            return {
-              notificationId: notification.id,
-              delivered: true,
-              skipped: false,
-              pending: false,
-              channelResults,
-            };
-          }
-
-          this.logger.log(
-            `[MEDIUM] Push wait expired for ${notification.id}, falling back to Email`,
+        if (!this.pushService.isPushChannelEnabled()) {
+          this.logger.warn(`[MEDIUM] Push channel disabled by admin toggle`);
+          await this.retryService.recordAttempt(
+            notification.id,
+            Channel.PUSH,
+            1,
+            DeliveryStatus.FAILED,
+            'Push service unavailable: Service toggled OFF by admin',
           );
           channelResults.push({
             channel: Channel.PUSH,
             success: false,
-            attempts: 0,
-            error: 'User offline, wait expired',
+            attempts: 1,
+            error: 'Push service toggled OFF by admin',
           });
           continue;
+        }
+
+        const isOnline = this.pushService.isUserOnline(user.id);
+        if (!isOnline) {
+          this.logger.log(
+            `[MEDIUM] User ${user.id} offline for Push — routing to Offline Queue with TTL`,
+          );
+
+          const remainingChannels = allowedChannels.includes(Channel.EMAIL)
+            ? [Channel.EMAIL]
+            : [];
+
+          await this.offlineQueueService.enqueueOfflinePush(
+            notification,
+            user,
+            Priority.MEDIUM,
+            remainingChannels,
+          );
+
+          channelResults.push({
+            channel: Channel.PUSH,
+            success: false,
+            attempts: 0,
+            pending: true,
+          });
+
+          return {
+            notificationId: notification.id,
+            delivered: false,
+            skipped: false,
+            pending: true,
+            channelResults,
+          };
         }
       }
 

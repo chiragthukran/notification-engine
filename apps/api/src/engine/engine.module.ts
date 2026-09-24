@@ -11,6 +11,8 @@ import { LowStrategy } from './strategies/low.strategy';
 import { UsersModule } from '../users/users.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { ChannelsModule } from '../channels/channels.module';
+import { WebsocketModule } from '../websocket/websocket.module';
+import { OfflineQueueService } from './offline-queue.service';
 
 @Module({
   imports: [
@@ -18,15 +20,17 @@ import { ChannelsModule } from '../channels/channels.module';
     UsersModule,
     forwardRef(() => NotificationsModule),
     ChannelsModule,
+    WebsocketModule,
   ],
   providers: [
     EngineService,
     RetryService,
+    OfflineQueueService,
     ImportantStrategy,
     HighStrategy,
     MediumStrategy,
     LowStrategy,
   ],
-  exports: [EngineService],
+  exports: [EngineService, OfflineQueueService],
 })
 export class EngineModule {}

@@ -3,25 +3,25 @@ import { ConfigService } from '@nestjs/config';
 import { Notification } from '../../database/entities/notification.entity';
 import { User } from '../../database/entities/user.entity';
 import { ChannelProvider } from '../../engine/interfaces';
+import { ChannelControlService } from '../channel-control.service';
+import { Channel } from '../../common/enums';
 
 /**
- * SMS channel provider using Twilio.
+ * SMS channel provider using Twilio (or simulated mock mode).
  *
- * When MOCK_CHANNELS=true, simulates SMS delivery with logging.
- * When MOCK_CHANNELS=false, sends via Twilio SDK.
+ * Checks ChannelControlService to support live on/off toggles
+ * and records delivered mock SMS messages for the User Dashboard inbox.
  */
 @Injectable()
 export class SmsService implements ChannelProvider {
   private readonly logger = new Logger(SmsService.name);
-  private readonly isMock: boolean;
   private twilioClient: any;
 
-  constructor(private readonly config: ConfigService) {
-    this.isMock = config.get<boolean>('mockChannels');
-
-    if (!this.isMock) {
-      this.initTwilio();
-    }
+  constructor(
+    private readonly config: ConfigService,
+    private readonly channelControl: ChannelControlService,
+  ) {
+    this.initTwilio();
   }
 
   private async initTwilio() {
@@ -45,11 +45,22 @@ export class SmsService implements ChannelProvider {
     notification: Notification,
     user: User,
   ): Promise<{ success: boolean; error?: string }> {
+    // 1. Check if SMS channel is toggled ON or OFF in simulator
+    if (!this.channelControl.isChannelEnabled(Channel.SMS)) {
+      this.logger.warn(
+        `[SMS SERVICE DISABLED] Simulated failure for notification ${notification.id} to ${user.phone}`,
+      );
+      return {
+        success: false,
+        error: 'SMS service unavailable: Service toggled OFF by admin',
+      };
+    }
+
     if (!user.phone) {
       return { success: false, error: 'User has no phone number' };
     }
 
-    if (this.isMock) {
+    if (this.channelControl.getStatus().mockMode) {
       return this.sendMock(notification, user);
     }
 
@@ -64,8 +75,20 @@ export class SmsService implements ChannelProvider {
       `[MOCK SMS] To: ${user.phone} | Message: [${notification.title}] ${notification.body}`,
     );
 
-    // Simulate ~300ms network delay
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    // Record mock message for User Dashboard SMS inbox
+    this.channelControl.recordDeliveredMessage({
+      notificationId: notification.id,
+      userId: user.id,
+      channel: Channel.SMS,
+      recipient: user.phone,
+      title: notification.title,
+      body: notification.body,
+      data: notification.data,
+      priority: notification.priority,
+    });
+
+    // Simulate ~150ms network delay
+    await new Promise((resolve) => setTimeout(resolve, 150));
 
     return { success: true };
   }
@@ -90,6 +113,7 @@ export class SmsService implements ChannelProvider {
       this.logger.log(
         `SMS sent to ${user.phone} — notification ${notification.id}`,
       );
+
       return { success: true };
     } catch (err) {
       this.logger.error(`SMS failed to ${user.phone}: ${err.message}`);

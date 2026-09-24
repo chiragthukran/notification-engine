@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Channel, PUSH_OFFLINE_WAIT, Priority } from '../../common/enums';
+import { Channel, Priority, DeliveryStatus } from '../../common/enums';
 import { Notification } from '../../database/entities/notification.entity';
 import { UserPreference } from '../../database/entities/user-preference.entity';
 import { User } from '../../database/entities/user.entity';
@@ -12,6 +12,7 @@ import { RetryService } from '../retry.service';
 import { PushService } from '../../channels/push/push.service';
 import { EmailService } from '../../channels/email/email.service';
 import { SmsService } from '../../channels/sms/sms.service';
+import { OfflineQueueService } from '../offline-queue.service';
 
 /**
  * HIGH priority strategy:
@@ -19,8 +20,8 @@ import { SmsService } from '../../channels/sms/sms.service';
  * Uses the user's eligible channel order (default: Push > Email > SMS).
  * Tries each channel in order with up to 3 retries per channel.
  * If a channel succeeds, stop and mark as delivered.
- * If Push and user is offline: wait 3 minutes. If they come online, deliver.
- * If they don't, fallback to next channel.
+ * If Push and user is offline: places message into RabbitMQ Offline Queue with TTL.
+ * When user comes online, message is delivered. If TTL expires, falls back to next channel.
  */
 @Injectable()
 export class HighStrategy implements DeliveryStrategy {
@@ -31,6 +32,7 @@ export class HighStrategy implements DeliveryStrategy {
     private readonly pushService: PushService,
     private readonly emailService: EmailService,
     private readonly smsService: SmsService,
+    private readonly offlineQueueService: OfflineQueueService,
   ) {}
 
   async execute(
@@ -58,44 +60,58 @@ export class HighStrategy implements DeliveryStrategy {
     for (const channel of eligibleChannels) {
       const provider = this.getProvider(channel);
 
-      // Push offline handling: wait 3 minutes
+      // Push offline handling
       if (channel === Channel.PUSH) {
+        // If Push service is disabled by admin in simulator, fail immediately and fallback
+        if (!this.pushService.isPushChannelEnabled()) {
+          this.logger.warn(`[HIGH] Push channel disabled by admin toggle`);
+          await this.retryService.recordAttempt(
+            notification.id,
+            Channel.PUSH,
+            1,
+            DeliveryStatus.FAILED,
+            'Push service unavailable: Service toggled OFF by admin',
+          );
+          channelResults.push({
+            channel: Channel.PUSH,
+            success: false,
+            attempts: 1,
+            error: 'Push service toggled OFF by admin',
+          });
+          continue;
+        }
+
         const isOnline = this.pushService.isUserOnline(user.id);
         if (!isOnline) {
           this.logger.log(
-            `[HIGH] User ${user.id} offline for Push — waiting ${PUSH_OFFLINE_WAIT[Priority.HIGH] / 1000}s`,
+            `[HIGH] User ${user.id} offline for Push — routing to Offline Queue with TTL`,
           );
 
-          const delivered = await this.pushService.waitForUserOnline(
+          const pushIdx = eligibleChannels.indexOf(Channel.PUSH);
+          const remainingChannels =
+            pushIdx >= 0 ? eligibleChannels.slice(pushIdx + 1) : [];
+
+          await this.offlineQueueService.enqueueOfflinePush(
             notification,
             user,
-            PUSH_OFFLINE_WAIT[Priority.HIGH],
+            Priority.HIGH,
+            remainingChannels,
           );
 
-          if (delivered) {
-            channelResults.push({
-              channel: Channel.PUSH,
-              success: true,
-              attempts: 1,
-            });
-            return {
-              notificationId: notification.id,
-              delivered: true,
-              skipped: false,
-              pending: false,
-              channelResults,
-            };
-          }
-
-          // User didn't come online — fallback to next channel
-          this.logger.log(`[HIGH] Push wait expired for ${notification.id}, falling back`);
           channelResults.push({
             channel: Channel.PUSH,
             success: false,
             attempts: 0,
-            error: 'User offline, wait expired',
+            pending: true,
           });
-          continue;
+
+          return {
+            notificationId: notification.id,
+            delivered: false,
+            skipped: false,
+            pending: true,
+            channelResults,
+          };
         }
       }
 

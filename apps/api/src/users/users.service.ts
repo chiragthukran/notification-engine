@@ -1,9 +1,11 @@
-import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { User } from '../database/entities/user.entity';
 import { UserPreference } from '../database/entities/user-preference.entity';
+import { Notification } from '../database/entities/notification.entity';
 import { Channel, DEFAULT_CHANNEL_ORDER } from '../common/enums';
+import { ChannelControlService } from '../channels/channel-control.service';
 
 @Injectable()
 export class UsersService {
@@ -12,6 +14,10 @@ export class UsersService {
     private readonly userRepo: Repository<User>,
     @InjectRepository(UserPreference)
     private readonly prefRepo: Repository<UserPreference>,
+    @InjectRepository(Notification)
+    private readonly notifRepo: Repository<Notification>,
+    @Inject(forwardRef(() => ChannelControlService))
+    private readonly channelControl: ChannelControlService,
   ) {}
 
   async create(
@@ -22,7 +28,6 @@ export class UsersService {
       phone?: string;
     },
   ) {
-    // Check for duplicate external_id within this tenant
     const existing = await this.userRepo.findOne({
       where: { tenantId, externalId: data.externalId },
     });
@@ -40,7 +45,6 @@ export class UsersService {
     });
     await this.userRepo.save(user);
 
-    // Create default preferences (all channels enabled, default order)
     const preference = this.prefRepo.create({
       userId: user.id,
       pushEnabled: true,
@@ -62,12 +66,20 @@ export class UsersService {
     return user;
   }
 
-  async findByExternalId(externalId: string, tenantId: string) {
+  async findByIdDirect(id: string) {
     const user = await this.userRepo.findOne({
+      where: { id },
+      relations: ['preference'],
+    });
+    if (!user) throw new NotFoundException('User not found');
+    return user;
+  }
+
+  async findByExternalId(externalId: string, tenantId: string) {
+    return this.userRepo.findOne({
       where: { externalId, tenantId },
       relations: ['preference'],
     });
-    return user;
   }
 
   async findAll(tenantId: string) {
@@ -75,6 +87,13 @@ export class UsersService {
       where: { tenantId },
       relations: ['preference'],
       order: { createdAt: 'DESC' },
+    });
+  }
+
+  async findPublicAll() {
+    return this.userRepo.find({
+      relations: ['preference'],
+      order: { createdAt: 'ASC' },
     });
   }
 
@@ -89,6 +108,31 @@ export class UsersService {
     },
   ) {
     const user = await this.findById(userId, tenantId);
+    return this.applyPreferences(user, data);
+  }
+
+  async updatePreferencesDirect(
+    userId: string,
+    data: {
+      pushEnabled?: boolean;
+      emailEnabled?: boolean;
+      smsEnabled?: boolean;
+      channelOrder?: Channel[];
+    },
+  ) {
+    const user = await this.findByIdDirect(userId);
+    return this.applyPreferences(user, data);
+  }
+
+  private async applyPreferences(
+    user: User,
+    data: {
+      pushEnabled?: boolean;
+      emailEnabled?: boolean;
+      smsEnabled?: boolean;
+      channelOrder?: Channel[];
+    },
+  ) {
     let preference = user.preference;
 
     if (!preference) {
@@ -101,13 +145,9 @@ export class UsersService {
     if (data.channelOrder) preference.channelOrder = data.channelOrder;
 
     await this.prefRepo.save(preference);
-    return this.findById(userId, tenantId);
+    return this.findByIdDirect(user.id);
   }
 
-  /**
-   * Returns the ordered list of enabled channels for a user,
-   * respecting their preference settings.
-   */
   getEligibleChannels(preference: UserPreference): Channel[] {
     const channelEnabledMap: Record<Channel, boolean> = {
       [Channel.PUSH]: preference.pushEnabled,
@@ -118,5 +158,24 @@ export class UsersService {
     return (preference.channelOrder || DEFAULT_CHANNEL_ORDER).filter(
       (ch) => channelEnabledMap[ch],
     );
+  }
+
+  async getUserInbox(userId: string) {
+    const user = await this.findByIdDirect(userId);
+
+    const notifications = await this.notifRepo.find({
+      where: { userId },
+      relations: ['deliveryAttempts'],
+      order: { createdAt: 'DESC' },
+      take: 50,
+    });
+
+    const mockMessages = this.channelControl.getMessages(userId);
+
+    return {
+      user,
+      notifications,
+      mockMessages,
+    };
   }
 }

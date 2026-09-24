@@ -12,13 +12,15 @@ import { RetryService } from '../retry.service';
 import { PushService } from '../../channels/push/push.service';
 import { EmailService } from '../../channels/email/email.service';
 import { SmsService } from '../../channels/sms/sms.service';
+import { OfflineQueueService } from '../offline-queue.service';
+import { Priority, DeliveryStatus } from '../../common/enums';
 
 /**
  * IMPORTANT priority strategy:
  *
  * Sends notification independently through ALL enabled channels in parallel.
  * Each channel retries independently (max 3 retries).
- * If Push fails because user is offline → Push stays pending; does NOT block Email/SMS.
+ * If Push fails because user is offline → Push stays pending in Offline Queue; does NOT block Email/SMS.
  * Overall notification = delivered if at least one channel succeeds.
  */
 @Injectable()
@@ -30,6 +32,7 @@ export class ImportantStrategy implements DeliveryStrategy {
     private readonly pushService: PushService,
     private readonly emailService: EmailService,
     private readonly smsService: SmsService,
+    private readonly offlineQueueService: OfflineQueueService,
   ) {}
 
   async execute(
@@ -78,16 +81,36 @@ export class ImportantStrategy implements DeliveryStrategy {
   ): Promise<ChannelDeliveryResult> {
     const provider = this.getProvider(channel);
 
-    // For Push: check if user is offline — if offline, mark as pending
+    // For Push: check if user is offline — if offline, route to Offline Queue
     // but do NOT block other channels
     if (channel === Channel.PUSH) {
+      if (!this.pushService.isPushChannelEnabled()) {
+        await this.retryService.recordAttempt(
+          notification.id,
+          Channel.PUSH,
+          1,
+          DeliveryStatus.FAILED,
+          'Push service unavailable: Service toggled OFF by admin',
+        );
+        return {
+          channel: Channel.PUSH,
+          success: false,
+          attempts: 1,
+          error: 'Push service toggled OFF by admin',
+        };
+      }
+
       const isOnline = this.pushService.isUserOnline(user.id);
       if (!isOnline) {
         this.logger.log(
-          `[IMPORTANT] User ${user.id} offline for Push — marking pending`,
+          `[IMPORTANT] User ${user.id} offline for Push — routing to Offline Queue`,
         );
-        await this.pushService.storePending(notification, user, 'important');
-        await this.retryService.recordPendingAttempt(notification.id, Channel.PUSH);
+        await this.offlineQueueService.enqueueOfflinePush(
+          notification,
+          user,
+          Priority.IMPORTANT,
+          [],
+        );
         return { channel: Channel.PUSH, success: false, attempts: 0, pending: true };
       }
     }

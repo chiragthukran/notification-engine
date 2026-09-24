@@ -14,16 +14,32 @@ export class TenantsController {
 
   /**
    * Register a new tenant. Returns the tenant and its API key.
-   * No auth required — this is the registration endpoint.
    */
   @Post()
   async create(@Body() body: { name: string; description?: string }) {
     const result = await this.tenantsService.create(body.name, body.description);
     return {
-      message: 'Tenant created successfully. Save your API key — it will not be shown again.',
+      message: 'Tenant created successfully. Save your API key.',
       tenant: result.tenant,
       apiKey: result.apiKey,
     };
+  }
+
+  /**
+   * Seed demo tenant and users for testing fallback and multi-channel delivery.
+   */
+  @Post('seed-demo')
+  async seedDemo() {
+    return this.tenantsService.seedDemoData();
+  }
+
+  /**
+   * Returns overview of tenants with active API keys and users
+   * for the dashboard testing UI.
+   */
+  @Get('overview')
+  async getOverview() {
+    return this.tenantsService.getOverview();
   }
 
   @Get()

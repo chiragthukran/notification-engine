@@ -3,25 +3,25 @@ import { ConfigService } from '@nestjs/config';
 import { Notification } from '../../database/entities/notification.entity';
 import { User } from '../../database/entities/user.entity';
 import { ChannelProvider } from '../../engine/interfaces';
+import { ChannelControlService } from '../channel-control.service';
+import { Channel } from '../../common/enums';
 
 /**
- * Email channel provider using AWS SES.
+ * Email channel provider using AWS SES (or simulated mock mode).
  *
- * When MOCK_CHANNELS=true, simulates email delivery with logging.
- * When MOCK_CHANNELS=false, sends via AWS SES SDK.
+ * Checks ChannelControlService to support live on/off toggles
+ * and records delivered mock messages for the User Dashboard inbox.
  */
 @Injectable()
 export class EmailService implements ChannelProvider {
   private readonly logger = new Logger(EmailService.name);
-  private readonly isMock: boolean;
   private sesClient: any;
 
-  constructor(private readonly config: ConfigService) {
-    this.isMock = config.get<boolean>('mockChannels');
-
-    if (!this.isMock) {
-      this.initSES();
-    }
+  constructor(
+    private readonly config: ConfigService,
+    private readonly channelControl: ChannelControlService,
+  ) {
+    this.initSES();
   }
 
   private async initSES() {
@@ -44,11 +44,22 @@ export class EmailService implements ChannelProvider {
     notification: Notification,
     user: User,
   ): Promise<{ success: boolean; error?: string }> {
+    // 1. Check if Email channel is toggled ON or OFF in simulator
+    if (!this.channelControl.isChannelEnabled(Channel.EMAIL)) {
+      this.logger.warn(
+        `[EMAIL SERVICE DISABLED] Simulated failure for notification ${notification.id} to ${user.email}`,
+      );
+      return {
+        success: false,
+        error: 'Email service unavailable: Service toggled OFF by admin',
+      };
+    }
+
     if (!user.email) {
       return { success: false, error: 'User has no email address' };
     }
 
-    if (this.isMock) {
+    if (this.channelControl.getStatus().mockMode) {
       return this.sendMock(notification, user);
     }
 
@@ -63,8 +74,20 @@ export class EmailService implements ChannelProvider {
       `[MOCK EMAIL] To: ${user.email} | Subject: ${notification.title} | Body: ${notification.body}`,
     );
 
-    // Simulate ~200ms network delay
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    // Record delivered mock email message for the User Dashboard Email Inbox
+    this.channelControl.recordDeliveredMessage({
+      notificationId: notification.id,
+      userId: user.id,
+      channel: Channel.EMAIL,
+      recipient: user.email,
+      title: notification.title,
+      body: notification.body,
+      data: notification.data,
+      priority: notification.priority,
+    });
+
+    // Simulate ~150ms network delay
+    await new Promise((resolve) => setTimeout(resolve, 150));
 
     return { success: true };
   }
@@ -106,6 +129,7 @@ export class EmailService implements ChannelProvider {
 
       await this.sesClient.send(command);
       this.logger.log(`Email sent to ${user.email} — notification ${notification.id}`);
+
       return { success: true };
     } catch (err) {
       this.logger.error(`Email failed to ${user.email}: ${err.message}`);

@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Channel, PUSH_OFFLINE_WAIT, Priority } from '../../common/enums';
+import { Channel, Priority, DeliveryStatus } from '../../common/enums';
 import { Notification } from '../../database/entities/notification.entity';
 import { UserPreference } from '../../database/entities/user-preference.entity';
 import { User } from '../../database/entities/user.entity';
@@ -12,6 +12,7 @@ import { RetryService } from '../retry.service';
 import { PushService } from '../../channels/push/push.service';
 import { EmailService } from '../../channels/email/email.service';
 import { SmsService } from '../../channels/sms/sms.service';
+import { OfflineQueueService } from '../offline-queue.service';
 
 /**
  * LOW priority strategy:
@@ -19,7 +20,8 @@ import { SmsService } from '../../channels/sms/sms.service';
  * Select the first eligible channel ONLY.
  * Try it → retry 3 times → Failed.
  * NO fallback to another channel.
- * Push offline: wait 72 hours → Failed (no fallback).
+ * Push offline: places message into Offline Queue with TTL.
+ * When user comes online, message is delivered. If TTL expires, marked Failed (no fallback).
  */
 @Injectable()
 export class LowStrategy implements DeliveryStrategy {
@@ -30,6 +32,7 @@ export class LowStrategy implements DeliveryStrategy {
     private readonly pushService: PushService,
     private readonly emailService: EmailService,
     private readonly smsService: SmsService,
+    private readonly offlineQueueService: OfflineQueueService,
   ) {}
 
   async execute(
@@ -56,33 +59,17 @@ export class LowStrategy implements DeliveryStrategy {
 
     const provider = this.getProvider(channel);
 
-    // Push offline handling: wait 72 hours, then fail (no fallback)
+    // Push offline handling
     if (channel === Channel.PUSH) {
-      const isOnline = this.pushService.isUserOnline(user.id);
-      if (!isOnline) {
-        this.logger.log(
-          `[LOW] User ${user.id} offline for Push — waiting up to 72 hours`,
+      if (!this.pushService.isPushChannelEnabled()) {
+        this.logger.warn(`[LOW] Push channel disabled by admin toggle`);
+        await this.retryService.recordAttempt(
+          notification.id,
+          Channel.PUSH,
+          1,
+          DeliveryStatus.FAILED,
+          'Push service unavailable: Service toggled OFF by admin',
         );
-
-        const delivered = await this.pushService.waitForUserOnline(
-          notification,
-          user,
-          PUSH_OFFLINE_WAIT[Priority.LOW],
-        );
-
-        if (delivered) {
-          return {
-            notificationId: notification.id,
-            delivered: true,
-            skipped: false,
-            pending: false,
-            channelResults: [
-              { channel: Channel.PUSH, success: true, attempts: 1 },
-            ],
-          };
-        }
-
-        // Wait expired — fail, no fallback
         return {
           notificationId: notification.id,
           delivered: false,
@@ -92,9 +79,33 @@ export class LowStrategy implements DeliveryStrategy {
             {
               channel: Channel.PUSH,
               success: false,
-              attempts: 0,
-              error: 'User offline, wait expired — no fallback for Low priority',
+              attempts: 1,
+              error: 'Push service toggled OFF by admin',
             },
+          ],
+        };
+      }
+
+      const isOnline = this.pushService.isUserOnline(user.id);
+      if (!isOnline) {
+        this.logger.log(
+          `[LOW] User ${user.id} offline for Push — routing to Offline Queue with TTL`,
+        );
+
+        await this.offlineQueueService.enqueueOfflinePush(
+          notification,
+          user,
+          Priority.LOW,
+          [], // No fallback for Low priority
+        );
+
+        return {
+          notificationId: notification.id,
+          delivered: false,
+          skipped: false,
+          pending: true,
+          channelResults: [
+            { channel: Channel.PUSH, success: false, attempts: 0, pending: true },
           ],
         };
       }

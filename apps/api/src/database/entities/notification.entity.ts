@@ -47,6 +47,9 @@ export class Notification {
   })
   status: NotificationStatus;
 
+  @Column({ name: 'expires_at', type: 'timestamp with time zone', nullable: true })
+  expiresAt?: Date | null;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 

@@ -102,12 +102,12 @@ export class RetryService {
     await this.recordAttempt(notificationId, channel, 1, DeliveryStatus.PENDING, 'User offline — waiting for reconnection');
   }
 
-  private async recordAttempt(
+  async recordAttempt(
     notificationId: string,
     channel: Channel,
     attemptNumber: number,
     status: DeliveryStatus,
-    errorMessage?: string,
+    errorMessage?: string | null,
   ) {
     const attempt = this.attemptRepo.create({
       notificationId,
