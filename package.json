@@ -1,0 +1,14 @@
+{
+  "name": "nx-notification-engine",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"pnpm --filter api run start:dev\" \"pnpm --filter web run dev\"",
+    "dev:api": "pnpm --filter api run start:dev",
+    "dev:web": "pnpm --filter web run dev",
+    "build": "pnpm --filter api run build && pnpm --filter web run build",
+    "install:all": "pnpm install"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}
