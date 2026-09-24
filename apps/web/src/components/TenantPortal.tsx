@@ -37,14 +37,23 @@ export function TenantPortal({
     }
   }, [tenants, selectedTenantId]);
 
-  useEffect(() => {
-    if (users.length > 0 && !selectedUserId) {
-      setSelectedUserId(users[0].id);
-    }
-  }, [users, selectedUserId]);
-
   const currentTenant = tenants.find((t) => t.id === selectedTenantId) || tenants[0];
-  const currentUser = users.find((u) => u.id === selectedUserId) || users[0];
+  const tenantUsers = users.filter((u) => u.tenantId === currentTenant?.id);
+
+  // Initialize or update selected user when tenant changes
+  useEffect(() => {
+    if (tenantUsers.length > 0) {
+      if (!selectedUserId || !tenantUsers.find((u) => u.id === selectedUserId)) {
+        setSelectedUserId(tenantUsers[0].id);
+        onSelectRecipient?.(tenantUsers[0].id);
+      }
+    } else {
+      setSelectedUserId('');
+      onSelectRecipient?.('');
+    }
+  }, [tenantUsers, selectedUserId, onSelectRecipient]);
+
+  const currentUser = tenantUsers.find((u) => u.id === selectedUserId) || tenantUsers[0];
 
   const handleCopyKey = () => {
     if (currentTenant?.apiKey) {
@@ -229,7 +238,7 @@ export function TenantPortal({
                 onSelectRecipient?.(e.target.value);
               }}
             >
-              {users.map((u) => (
+              {tenantUsers.map((u) => (
                 <option key={u.id} value={u.id}>
                   {u.externalId} — {u.email} ({u.phone})
                 </option>

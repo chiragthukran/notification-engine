@@ -66,6 +66,7 @@ export class OfflineQueueService implements OnModuleInit, OnModuleDestroy {
 
     // Listen for WebSocket reconnection events to deliver pending offline notifications
     this.connectionManager.on('user-online', (userId: string) => {
+      if (userId === 'admin-dashboard-monitor') return;
       this.deliverPendingForUser(userId).catch((err) => {
         this.logger.error(
           `Error flushing pending notifications for user ${userId}: ${err.message}`,

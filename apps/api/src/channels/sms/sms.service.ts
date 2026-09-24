@@ -31,7 +31,9 @@ export class SmsService implements ChannelProvider {
       const authToken = this.config.get<string>('twilio.authToken');
 
       if (accountSid && authToken) {
-        this.twilioClient = twilio.default(accountSid, authToken);
+        // Handle commonJS vs ESM dynamic import wrapping
+        const twilioClientFn = typeof twilio.default === 'function' ? twilio.default : (twilio as any);
+        this.twilioClient = twilioClientFn(accountSid, authToken);
         this.logger.log('Twilio client initialized');
       } else {
         this.logger.warn('Twilio credentials not provided');
@@ -105,7 +107,7 @@ export class SmsService implements ChannelProvider {
       const fromNumber = this.config.get<string>('twilio.phoneNumber');
 
       await this.twilioClient.messages.create({
-        body: `[${notification.title}] ${notification.body}`,
+        body: notification.body,
         from: fromNumber,
         to: user.phone,
       });
