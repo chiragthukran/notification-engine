@@ -59,7 +59,7 @@ flowchart LR
 
 ---
 
-## 🚀 What NX Does
+## What NX Does
 
 Multiple isolated tenants can send notification requests through the authenticated NX API.
 
@@ -102,7 +102,7 @@ NX handles:
 - Real-time monitoring
 
 The API and worker layers are designed to operate asynchronously so that tenant services do not need to wait for external providers to complete delivery.
-## 🚀 What NX Does
+## What NX Does
 
 Multiple isolated tenants send notification requests to NX through its authenticated API. NX processes, queues, routes, retries, and delivers those notifications asynchronously. 
 
@@ -113,7 +113,7 @@ Our initial plan was built around reliability and smart degradation. The engine 
 
 ---
 
-## 🚦 Priority Routing & Fallback Logic
+## Priority Routing & Fallback Logic
 
 Notifications wait in the queue and are processed based on four strict priority levels. The system handles maximum **3 retries per channel (4 total attempts)** before considering a channel "failed".
 
@@ -142,9 +142,9 @@ Notifications wait in the queue and are processed based on four strict priority 
 
 ---
 
-## 🧪 Why Use Simulations & Mock Mode?
+## Why Use Simulations & Mock Mode?
 
-By default, the engine boots up with `MOCK_CHANNELS=true` (or you can toggle it off in the Dashboard via the red **🚀 PROD MODE** button). 
+By default, the engine boots up with `MOCK_CHANNELS=true` (or you can toggle it off in the Dashboard via the red ** PROD MODE** button). 
 
 **Why do we simulate?**
 1. **Cost Efficiency:** Testing fallback chains (e.g., sending an SMS 4 times in a row before it fails) is incredibly expensive using real Twilio APIs.
@@ -179,13 +179,14 @@ You need Docker, Node.js (v18+), and `pnpm` installed.
 
 ---
 
-## 🎯 How to Test It
+##  How to Test It
 
 Testing NX is incredibly visual and interactive via the built-in Dashboard.
 
 1. **Open the Dashboard:** Go to `http://localhost:3000`.
-2. **Tenant Dispatch Studio:** Navigate to the "Tenant Dispatcher" tab on the left.
+2. **Tenant Dispatch Studio:** Go to `http://localhost:3000/tenant`
 3. **Dispatch Presets:** Use the "Quick Test Scenarios" buttons to immediately queue up notifications with various priorities (Important, High, Medium, Low).
-4. **Watch the Engine Monitor:** Navigate to the "Engine Monitor" tab. Watch the live charts and the "Delivery Status Timeline" to see your notifications queue up, process, and successfully deliver.
+4. **Watch the Engine Monitor:** In the `http://localhost:3000`. Watch the live charts and the "Delivery Status Timeline" to see your notifications queue up, process, and successfully deliver.
 5. **Force a Fallback:** In the Engine Monitor, locate the **Channel Simulator** bar. Toggle the **Push** channel to **OFF**. Now go dispatch a High Priority notification and watch the engine automatically detect the failure and fallback to the Email channel!
 6. **Test Prod Mode:** If you have real Twilio credentials configured in `.env`, flip the "Prod Mode" toggle in the Simulator Bar and dispatch an SMS to see it arrive on your physical phone!
+7. **User:** To see the notifications and set user preferences go to `http://localhost:3000/user`
