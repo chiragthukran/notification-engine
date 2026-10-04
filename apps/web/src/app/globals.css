@@ -102,70 +102,14 @@ body {
    LAYOUT
    ═══════════════════════════════════════════ */
 
-.app {
+.app-no-sidebar {
   min-height: 100vh;
   display: flex;
-  flex-direction: row;
-}
-
-.sidebar {
-  width: 260px;
-  background-color: var(--bg-card);
-  border-right: 1px solid var(--border-medium);
-  display: flex;
   flex-direction: column;
-  position: fixed;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  z-index: 60;
-}
-
-.sidebar-header {
-  height: 72px;
-  display: flex;
-  align-items: center;
-  padding: 0 24px;
-}
-
-.sidebar-menu {
-  padding: 16px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.sidebar-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 16px;
-  border-radius: var(--radius-md);
-  color: var(--text-secondary);
-  font-weight: 500;
-  font-size: 14px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  border: none;
-  background: transparent;
-  width: 100%;
-  text-align: left;
-}
-
-.sidebar-item:hover {
-  background-color: var(--bg-inset);
-  color: var(--text-primary);
-}
-
-.sidebar-item.active {
-  background: linear-gradient(72.47deg, #7367f0 22.16%, rgba(115, 103, 240, 0.7) 76.47%);
-  color: #fff;
-  box-shadow: 0px 2px 6px 0px rgba(115, 103, 240, 0.48);
 }
 
 .main-wrapper {
   flex: 1;
-  margin-left: 260px;
   display: flex;
   flex-direction: column;
   min-height: 100vh;
@@ -207,6 +151,21 @@ body {
   display: flex;
   align-items: center;
   gap: 16px;
+}
+
+.header-divider {
+  width: 1px;
+  height: 28px;
+  background: var(--border-strong);
+}
+
+.header-page-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
 }
 
 .logo {

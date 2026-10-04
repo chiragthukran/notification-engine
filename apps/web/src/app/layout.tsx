@@ -1,5 +1,7 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import { AppProvider } from '../context/AppContext';
+import { NavShell } from '../components/NavShell';
 
 export const metadata: Metadata = {
   title: 'NX — Notification Engine Dashboard',
@@ -14,7 +16,11 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <AppProvider>
+          <NavShell>{children}</NavShell>
+        </AppProvider>
+      </body>
     </html>
   );
 }

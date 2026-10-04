@@ -1,8 +1,7 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { User, MockMessage, Notification } from '../types';
-import io, { Socket } from 'socket.io-client';
 
 interface Props {
   users: User[];
@@ -25,12 +24,21 @@ export function UserPortal({
 }: Props) {
   const [selectedUserId, setSelectedUserId] = useState<string>(activeUserId || '');
   const [activeTab, setActiveTab] = useState<'push' | 'email' | 'sms' | 'prefs'>('push');
+  const [offlineSince, setOfflineSince] = useState<number | null>(isDeviceOnline ? null : Date.now());
 
   useEffect(() => {
     if (activeUserId && activeUserId !== selectedUserId) {
       setSelectedUserId(activeUserId);
     }
   }, [activeUserId, selectedUserId]);
+
+  useEffect(() => {
+    if (!isDeviceOnline) {
+      if (!offlineSince) setOfflineSince(Date.now());
+    } else {
+      setOfflineSince(null);
+    }
+  }, [isDeviceOnline, offlineSince]);
 
   const [inboxNotifications, setInboxNotifications] = useState<Notification[]>([]);
   const [mockMessages, setMockMessages] = useState<MockMessage[]>([]);
@@ -44,8 +52,6 @@ export function UserPortal({
 
   // Email reader selection
   const [selectedEmailId, setSelectedEmailId] = useState<string | null>(null);
-
-  const socketRef = useRef<Socket | null>(null);
 
   useEffect(() => {
     if (users.length > 0 && !selectedUserId) {
@@ -81,62 +87,16 @@ export function UserPortal({
     }
   };
 
+  // Initial fetch + auto-refresh inbox every 3 seconds (ALWAYS poll to get SMS)
   useEffect(() => {
     if (selectedUserId) {
       fetchInbox(selectedUserId);
+      const interval = setInterval(() => {
+        fetchInbox(selectedUserId);
+      }, 3000);
+      return () => clearInterval(interval);
     }
   }, [selectedUserId]);
-
-  // WebSocket Connection Management
-  useEffect(() => {
-    if (!selectedUserId) return;
-
-    if (isDeviceOnline) {
-      // Connect to WebSocket gateway
-      const socket = io('http://localhost:3001', {
-        auth: { userId: selectedUserId },
-        transports: ['websocket'],
-      });
-
-      socketRef.current = socket;
-
-      socket.on('connect', () => {
-        console.log(`[WebSocket] User ${selectedUserId} connected`);
-      });
-
-      socket.on('notification', (payload: any) => {
-        console.log('[WebSocket] Real-time Push Notification received:', payload);
-        onToast({
-          title: payload.title,
-          body: payload.body,
-          priority: payload.priority,
-          channel: 'push',
-        });
-        fetchInbox(selectedUserId);
-      });
-
-      socket.on('user:message', (payload: MockMessage) => {
-        console.log('[WebSocket] User Mock Message received:', payload);
-        onToast({
-          title: payload.title,
-          body: payload.body,
-          priority: payload.priority,
-          channel: payload.channel,
-        });
-        fetchInbox(selectedUserId);
-      });
-
-      return () => {
-        socket.disconnect();
-      };
-    } else {
-      // If simulated offline, disconnect socket
-      if (socketRef.current) {
-        socketRef.current.disconnect();
-        socketRef.current = null;
-      }
-    }
-  }, [selectedUserId, isDeviceOnline]);
 
   const handleSavePreferences = async () => {
     if (!selectedUserId) return;
@@ -174,9 +134,18 @@ export function UserPortal({
     }
   };
 
-  const emailMessages = mockMessages.filter((m) => m.channel === 'email');
-  const smsMessages = mockMessages.filter((m) => m.channel === 'sms');
-  const pushMessages = mockMessages.filter((m) => m.channel === 'push');
+  // Filter messages based on simulated device connectivity
+  const visibleMockMessages = mockMessages.filter((m) => {
+    if (m.channel === 'sms') return true; // SMS is cellular, always visible
+    if (!isDeviceOnline && offlineSince && new Date(m.timestamp).getTime() > offlineSince) {
+      return false; // Hide Push/Email that arrived while internet was disconnected
+    }
+    return true;
+  });
+
+  const emailMessages = visibleMockMessages.filter((m) => m.channel === 'email');
+  const smsMessages = visibleMockMessages.filter((m) => m.channel === 'sms');
+  const pushMessages = visibleMockMessages.filter((m) => m.channel === 'push');
 
   const selectedEmail =
     emailMessages.find((m) => m.id === selectedEmailId) || emailMessages[0];

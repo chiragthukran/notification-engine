@@ -350,11 +350,30 @@ export function TenantPortal({
         </form>
       </div>
 
-      {/* Right Column: Live Sent Feed & Fallback Tracing */}
+      {/* Right Column: Simplified Stats & Status */}
       <div className="panel">
         <div className="panel-title">
           <span className="icon">📋</span>
-          <span>Live Tenant Dispatch Log &amp; Fallback Journey</span>
+          <span>Dispatched Notifications</span>
+        </div>
+
+        <div style={{ display: 'flex', gap: 12, marginBottom: 20 }}>
+          <div className="stat-card" style={{ flex: 1, padding: 12 }}>
+            <div className="stat-label">Total Sent</div>
+            <div className="stat-value">{recentNotifications.length}</div>
+          </div>
+          <div className="stat-card" style={{ flex: 1, padding: 12, background: 'var(--accent-sage-bg)' }}>
+            <div className="stat-label" style={{ color: 'var(--accent-sage)' }}>Delivered</div>
+            <div className="stat-value" style={{ color: 'var(--accent-sage)' }}>
+              {recentNotifications.filter(n => n.status === 'delivered').length}
+            </div>
+          </div>
+          <div className="stat-card" style={{ flex: 1, padding: 12, background: 'var(--accent-terracotta-bg)' }}>
+            <div className="stat-label" style={{ color: 'var(--accent-terracotta)' }}>Failed</div>
+            <div className="stat-value" style={{ color: 'var(--accent-terracotta)' }}>
+              {recentNotifications.filter(n => n.status === 'failed').length}
+            </div>
+          </div>
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -364,9 +383,7 @@ export function TenantPortal({
               <div className="empty-state-text">No notifications dispatched yet.</div>
             </div>
           ) : (
-            recentNotifications.slice(0, 10).map((n) => {
-              const attempts = n.deliveryAttempts || [];
-              return (
+            recentNotifications.slice(0, 10).map((n) => (
                 <div
                   key={n.id}
                   style={{
@@ -374,53 +391,24 @@ export function TenantPortal({
                     border: '1px solid var(--border-subtle)',
                     borderRadius: 'var(--radius-md)',
                     padding: 14,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between'
                   }}
                 >
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                    <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--text-primary)' }}>
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--text-primary)', marginBottom: 4 }}>
                       {n.title}
                     </div>
-                    <div style={{ display: 'flex', gap: 6 }}>
-                      <span className={`badge ${n.priority}`}>{n.priority}</span>
-                      <span className={`badge ${n.status}`}>{n.status}</span>
+                    <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                      {n.body}
                     </div>
                   </div>
-
-                  <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 12 }}>
-                    {n.body}
-                  </div>
-
-                  {/* Fallback chain visualizer */}
                   <div>
-                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 6, textTransform: 'uppercase' }}>
-                      Delivery &amp; Fallback Trace:
-                    </div>
-                    {attempts.length === 0 ? (
-                      <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                        Waiting in RabbitMQ queue...
-                      </span>
-                    ) : (
-                      <div className="fallback-chain-container">
-                        {attempts.map((att, idx) => (
-                          <div key={att.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                            <div className={`attempt-pill ${att.status}`}>
-                              <span>
-                                {att.channel === 'push' ? '🔔' : att.channel === 'email' ? '📧' : '💬'}{' '}
-                                {att.channel.toUpperCase()} (Try #{att.attemptNumber})
-                              </span>
-                              <span>
-                                {att.status === 'success' ? '✓' : att.status === 'failed' ? '✗' : '⏳'}
-                              </span>
-                            </div>
-                            {idx < attempts.length - 1 && <span className="attempt-arrow">➔</span>}
-                          </div>
-                        ))}
-                      </div>
-                    )}
+                    <span className={`badge ${n.status}`}>{n.status}</span>
                   </div>
                 </div>
-              );
-            })
+            ))
           )}
         </div>
       </div>
